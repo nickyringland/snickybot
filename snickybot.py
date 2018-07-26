@@ -37,7 +37,7 @@ while True:
       text=":smile: Next tutor {} in {}".format(next_tutor.summary, (impending_tutor_time))
     )
     announced_next_tutor = next_tutor
-  print(f'checking ical next tutor {announced_next_tutor.summary}')
+  print('checking ical next tutor {}.'.format(announced_next_tutor.summary))
   if impending_tutor_time.total_seconds() < (5*60):
     sc.api_call(
       "chat.postMessage",
