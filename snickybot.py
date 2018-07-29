@@ -133,7 +133,26 @@ msg_id_to_watch = {}
 announced_next_tutor_cal = None
 
 def handle_event(event):
-  # TODO: look for emoji reactions
+
+  if event['type'] == 'reaction_added':
+    msgid = event['item']['ts']
+    userid = event['user']
+
+    if msgid not in msg_id_to_watch:
+      return  # some other message
+    prev_msg = msg_id_to_watch[msgid]
+    if prev_msg['slackid'] != userid:
+      return  # not the user we care about
+    del msg_id_to_watch[msgid]
+
+    # TODO: reply to thread, don't just post a new message
+    message = sc.api_call(
+      "chat.postMessage",
+      channel=channel,
+      text="Thanks <@{}>! :+1:".format(userid)
+    )
+    print("user {} acked tutoring with {}", userid, event['reaction'])
+    return
 
   if event['type'] != "message":
     return  # ignore for now
@@ -162,7 +181,7 @@ def handle_event(event):
   message = sc.api_call(
     "chat.postMessage",
     channel=channel,
-    text="Thanks! I've updated {}'s slack ID to be <@{}> -- please ack this message with an emoji reaction. :+1:".format(data['sourcename'], foundid)
+    text="Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid)
   )
 
 
