@@ -7,6 +7,8 @@ import re
 
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
+MINUTES_NOTIFY = 47  # should be 5
+MINUTES_DANGER = 1
 
 tutors_dict = {}  # real name to slackid
 
@@ -41,6 +43,20 @@ channel="CBXDYDGFP"
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
   raise Error("couldn't connect to RTM api")
 sc.rtm_send_message("welcome-test", "test")
+
+
+def get_pending_tutor_cals(now, within=MINUTES_NOTIFY):
+  out = []
+  evs = icalevents.events(url=url)
+  #'all_day', 'copy_to', 'description', 'end', 'start', 'summary', 'time_left', 'uid'
+  evs.sort(key=lambda ev: now - ev.start, reverse=True)
+
+  for ev in evs:
+    in_minutes = (now - ev.start).total_seconds() / 60.0
+    if in_minutes * -1 < within and in_minutes < 0:
+      out.append(ev)
+  return out
+
 
 def get_next_tutor_cal(now):
   evs = icalevents.events(url=url)
@@ -80,22 +96,10 @@ def get_members(members, tutors_dict):
               'name':name,
               'real_name':real_name
               }
-    #print('getting ' + real_name)
-
-
-def message_tutor(tutor):
-  print('messaging {}'.format(tutor['real_name']))
-  message = sc.api_call(
-    'chat.postMessage',
-    channel=channel,
-    text='<@{}> This is a test.'.format(tutor['id'])
-    )
 
 
 def extract_name_from_cal(cal_summary):
-  #next_tutor_cal.summary is something like:
-  #NCSS Tutoring (Nicky Ringland)
-  #wooo lazy
+  #next_tutor_cal.summary is something like:  #NCSS Tutoring (Firstname Lastname)
   name = next_tutor_cal.summary.replace('NCSS Tutoring (','')[:-1]
   print('Name from calendar: {}'.format(name))
   return(name)
@@ -112,12 +116,16 @@ def match_tutor(next_tutor_cal, tutor_list):
     return None
 
 
-def message_tutor(slack_tutor, impending_tutor_time):
+def sendmsg(text, threadid=None): # TODO thread stuff later
   message = sc.api_call(
     "chat.postMessage",
     channel=channel,
-    text=":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time))
+    text=text
   )
+  return message
+
+def message_tutor(slack_tutor, impending_tutor_time):
+  message = sendmsg(text=":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time)))
   return message
 
 def message_unknown_tutor(name, impending_tutor_time):
@@ -130,9 +138,13 @@ def message_unknown_tutor(name, impending_tutor_time):
 
 name_to_slackid = {}
 msg_id_to_watch = {}
-announced_next_tutor_cal = None
+already_announced = {}
 
 def handle_event(event):
+  print('got an event')
+  print('msg_id_to_watch: {}'.format(msg_id_to_watch))
+  print('already_announced: {}'.format(already_announced))
+  print()
 
   if event['type'] == 'reaction_added':
     msgid = event['item']['ts']
@@ -143,14 +155,13 @@ def handle_event(event):
     prev_msg = msg_id_to_watch[msgid]
     if prev_msg['slackid'] != userid:
       return  # not the user we care about
+    print('Correct person acked, so deleting msgid {} from msg_id_to_watch:\n{}'.format(msgid, msg_id_to_watch))
     del msg_id_to_watch[msgid]
+    x = prev_msg['calid']
+    already_announced[x]['acked'] = True
 
     # TODO: reply to thread, don't just post a new message
-    message = sc.api_call(
-      "chat.postMessage",
-      channel=channel,
-      text="Thanks <@{}>! :+1:".format(userid)
-    )
+    sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid))
     print("user {} acked tutoring with {}", userid, event['reaction'])
     return
 
@@ -184,35 +195,70 @@ def handle_event(event):
     text="Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid)
   )
 
-
 while True:
   members =get_slack_members()
   get_members(members, tutors_dict)
 
   now = datetime.now(timezone.utc)
-  next_tutor_cal = get_next_tutor_cal(now)
-  impending_tutor_time = -(now - next_tutor_cal.start)
+  pending = get_pending_tutor_cals(now)
+  for next_tutor_cal in pending:
+    # SO it turns out that Google thinks -1 is a great uid for all events. 
+    calid = '{}-{}'.format(next_tutor_cal.start, next_tutor_cal.summary)
+    if calid in already_announced:
+      continue  # don't announce a second time
 
-  if not event_is_same(next_tutor_cal, announced_next_tutor_cal):
+    # get tutor and their name if possible
     slack_tutor = match_tutor(next_tutor_cal, tutors_dict)
     name = extract_name_from_cal(next_tutor_cal)
+
+    impending_tutor_time = -(now - next_tutor_cal.start)
     if slack_tutor != None:
+      # we know who they are on slack
       m = message_tutor(slack_tutor, impending_tutor_time)
-      msg_id_to_watch[m['ts']] = {'sourcename': name, 'slackid': slack_tutor['id']}
+      slackid = slack_tutor['id']
     else:
+      # we don't know who they are
       m = message_unknown_tutor(name, impending_tutor_time)
-      msg_id_to_watch[m['ts']] = {'sourcename': name, 'slackid': None}
-    announced_next_tutor_cal = next_tutor_cal
-  print('checking ical next tutor {}.'.format(announced_next_tutor_cal.summary))
-  if impending_tutor_time.total_seconds() < (5*60):
-    sc.api_call(
-      "chat.postMessage",
-      channel=channel,
-      text="remind @{} - {} starting soon! plz ack".format(tutors['Nicky Ringland'],next_tutor_cal.summary)
-    )
+      slackid = None
+
+    # save for later
+    msg_id_to_watch[m['ts']] = {'sourcename': name, 'slackid': slackid, 'calid': calid}
+    already_announced[calid] = {
+      'cal': next_tutor_cal,
+      'msgid': m['ts'],
+      'acked': False,
+    }
+
+  for calid in list(already_announced.keys()):  # we might modify this during iteration
+    data = already_announced[calid]
+    unacked_cal = data['cal']
+    msgid = data['msgid']
+    already_acked = data['acked']
+    if already_acked:
+      # this has already been ack'd by an emoji.
+      print('skipping {} as it was already acked'.format(msgid))
+      continue
+    if msgid not in msg_id_to_watch:
+      # Time's up, bot alerted Nicky/Josie, we removed msg.
+      continue
+    prev_msg = msg_id_to_watch[msgid]
+
+    minutes_away = (unacked_cal.start - now).total_seconds() / 60  # negative if we've gone past no
+    print('minutes_away: {}'.format(minutes_away)) #TODO check minutes vs seconds. Time is hard.
+    if minutes_away > MINUTES_DANGER:
+      continue
+
+    if prev_msg['slackid']:
+      who = "<@{}>".format(prev_msg['slackid'])
+    else:
+      who = "{}".format(prev_msg['sourcename'])
+    # TODO: use real IDs of nicky and josie
+    sendmsg("Oh no! {} hasn't responded.  @nicky and @jspongberg!".format(who), threadid=msgid)
+    del msg_id_to_watch[msgid]
+    #del already_announced[calid] #don't delete it from already_announced
 
   # sleep for 60s but check if we have events
-  for i in range(0, 60):
+  for i in range(0, 10): # TODO set this back to 60 seconds
     events = sc.rtm_read()
     for event in events:
       handle_event(event)
