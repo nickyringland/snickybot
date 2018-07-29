@@ -41,7 +41,7 @@ channel="CBXDYDGFP"
 
 # connect to RTM API which feeds us stuff that happens
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
-  raise Error("couldn't connect to RTM api")
+  raise Exception("couldn't connect to RTM api")
 sc.rtm_send_message("welcome-test", "test")
 
 
