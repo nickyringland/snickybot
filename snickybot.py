@@ -6,12 +6,30 @@ import os
 import re
 
 RE_SLACKID = re.compile('<@(\w+)>')
+LOOKUP_FILE = "username_log"
 
-tutor_dict = {}  # real name to slackid
+tutors_dict = {}  # real name to slackid
 
-# TODO: read from whole file
-# f = open('username_lookup','r')
-# TODO: reopen to append lines to it
+# read whole file and fill it in
+try:
+  with open(LOOKUP_FILE) as f:
+    for line in f:
+      line = line.strip()
+      parts = line.split(',', 1)
+      if len(parts) != 2:
+        if line:
+          print("bad line: {}".format(line))
+        continue
+      foundid, sourcename = parts
+      tutors_dict[sourcename] = {'id': foundid, 'real_name': sourcename}
+except IOError:
+  pass # probably doesn't exist
+
+for sourcename in tutors_dict:
+  print("got known usermap: {} => {}", sourcename, tutors_dict[sourcename])
+
+# now open it again to append more logs
+username_file = open(LOOKUP_FILE, 'a')
 
 slack_token = os.environ["SLACK_API_TOKEN"]
 print("Got token: {}".format(slack_token))
@@ -98,7 +116,7 @@ def message_tutor(slack_tutor, impending_tutor_time):
   message = sc.api_call(
     "chat.postMessage",
     channel=channel,
-    text=":smile: <@{}>'s shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], (impending_tutor_time))
+    text=":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time))
   )
   return message
 
@@ -106,7 +124,7 @@ def message_unknown_tutor(name, impending_tutor_time):
   message = sc.api_call(
     "chat.postMessage",
     channel=channel,
-    text=":smile: {}'s shift starts in {}, but I don't know their slack ID. Please ack with an emoji reaction.".format(name, (impending_tutor_time))
+    text=":smile: {}'s shift starts in {}, but I don't know their slack ID. Please reply to this thread with an @mention of their username to let me know who they are!".format(name, (impending_tutor_time))
   )
   return message
 
@@ -136,21 +154,28 @@ def handle_event(event):
   foundid = out.group(1)
   tutors_dict[data['sourcename']] = {'id': foundid, 'real_name': data['sourcename']}
   print("connected '{}' to Slack: {}".format(data['sourcename'], foundid))
+  username_file.write("{},{}\n".format(foundid, data['sourcename']))
+  username_file.flush()
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
-  # then
+  # TODO: reply to thread, don't just post a new message
+  message = sc.api_call(
+    "chat.postMessage",
+    channel=channel,
+    text="Thanks! I've updated {}'s slack ID to be <@{}> -- please ack this message with an emoji reaction. :+1:".format(data['sourcename'], foundid)
+  )
 
 
 while True:
   members =get_slack_members()
-  get_members(members, tutor_dict)
+  get_members(members, tutors_dict)
 
   now = datetime.now(timezone.utc)
   next_tutor_cal = get_next_tutor_cal(now)
   impending_tutor_time = -(now - next_tutor_cal.start)
 
   if not event_is_same(next_tutor_cal, announced_next_tutor_cal):
-    slack_tutor = match_tutor(next_tutor_cal, tutor_dict)
+    slack_tutor = match_tutor(next_tutor_cal, tutors_dict)
     name = extract_name_from_cal(next_tutor_cal)
     if slack_tutor != None:
       m = message_tutor(slack_tutor, impending_tutor_time)
