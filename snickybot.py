@@ -7,7 +7,7 @@ import re
 
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
-MINUTES_NOTIFY = 5  # should be 5
+MINUTES_NOTIFY = 10  # should be 5?
 MINUTES_DANGER = 1
 
 tutors_dict = {}  # real name to slackid
@@ -43,6 +43,22 @@ channel="CBXDYDGFP"
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
   raise Exception("couldn't connect to RTM api")
 sc.rtm_send_message("welcome-test", "test")
+
+
+def pretty_time_delta(td):
+  seconds = int(td.total_seconds())
+  seconds = abs(seconds)
+  days, seconds = divmod(seconds, 86400)
+  hours, seconds = divmod(seconds, 3600)
+  minutes, seconds = divmod(seconds, 60)
+  if days > 0:
+    return '%dd%dh%dm%ds' % (days, hours, minutes, seconds)
+  elif hours > 0:
+    return '%dh%dm%ds' % (hours, minutes, seconds)
+  elif minutes > 0:
+    return '%dm%ds' % (minutes, seconds)
+  else:
+    return '%ds' % (seconds)
 
 
 def get_pending_tutor_cals(now, within=MINUTES_NOTIFY):
@@ -124,11 +140,15 @@ def sendmsg(text, threadid=None): # TODO thread stuff later
   )
   return message
 
+
 def message_tutor(slack_tutor, impending_tutor_time):
+  impending_tutor_time = pretty_time_delta(impending_tutor_time)
   message = sendmsg(text=":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time)))
   return message
 
+
 def message_unknown_tutor(name, impending_tutor_time):
+  impending_tutor_time = pretty_time_delta(impending_tutor_time)
   message = sc.api_call(
     "chat.postMessage",
     channel=channel,
@@ -136,9 +156,11 @@ def message_unknown_tutor(name, impending_tutor_time):
   )
   return message
 
+
 name_to_slackid = {}
 msg_id_to_watch = {}
 already_announced = {}
+
 
 def handle_event(event):
   print('got an event')
@@ -244,7 +266,7 @@ while True:
     prev_msg = msg_id_to_watch[msgid]
 
     minutes_away = (unacked_cal.start - now).total_seconds() / 60  # negative if we've gone past no
-    print('minutes_away: {}'.format(minutes_away)) #TODO check minutes vs seconds. Time is hard.
+    print('minutes_away: {}'.format(minutes_away))
     if minutes_away > MINUTES_DANGER:
       continue
 
@@ -258,7 +280,7 @@ while True:
     #del already_announced[calid] #don't delete it from already_announced
 
   # sleep for 60s but check if we have events
-  for i in range(0, 60): 
+  for i in range(0, 60):
     events = sc.rtm_read()
     for event in events:
       handle_event(event)
