@@ -7,7 +7,7 @@ import re
 
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
-MINUTES_NOTIFY = 47  # should be 5
+MINUTES_NOTIFY = 5  # should be 5
 MINUTES_DANGER = 1
 
 tutors_dict = {}  # real name to slackid
@@ -258,7 +258,7 @@ while True:
     #del already_announced[calid] #don't delete it from already_announced
 
   # sleep for 60s but check if we have events
-  for i in range(0, 10): # TODO set this back to 60 seconds
+  for i in range(0, 60): 
     events = sc.rtm_read()
     for event in events:
       handle_event(event)
