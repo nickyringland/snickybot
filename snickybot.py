@@ -21,6 +21,7 @@ SLACK_TOKEN = args.token
 CALENDAR_URL = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
+REACTION_FILE = "reaction_log"
 OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
 SLEEP_MINUTES = 1
 
@@ -58,6 +59,7 @@ for sourcename in tutors_dict:
 
 # now open it again to append more logs
 username_file = open(LOOKUP_FILE, 'a')
+reaction_file = open(REACTION_FILE, 'a')
 
 # connect to Slack
 sc = SlackClient(SLACK_TOKEN)
@@ -187,6 +189,8 @@ def handle_event_reaction_added(event):
 
   sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
   print("user {} acked tutoring with {}".format(userid, event['reaction']))
+  reaction_file.write('{},{}\n'.format(userid, event['reaction']))
+  reaction_file.flush()
 
 
 def handle_event_message(event):
