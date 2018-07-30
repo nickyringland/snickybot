@@ -5,12 +5,18 @@ import time
 import os
 import re
 
+SLACK_TOKEN = os.environ.get('SLACK_API_TOKEN', '')
+if not SLACK_TOKEN:
+  raise Exception('please set SLACK_API_TOKEN in env')
+
+CALENDAR_URL = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
 MINUTES_NOTIFY = 10  # should be 5?
 MINUTES_DANGER = 1
-NICKY_ID = 'UBV5SETED'
-JOSIE_ID = 'UBZ7T5C30'
+CHANNEL = "CBXDYDGFP" # TEST SLACK
+CHANNEL = "CBVLC2MU3"
+OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
 
 tutors_dict = {}  # real name to slackid
 
@@ -30,17 +36,13 @@ except IOError:
   pass # probably doesn't exist
 
 for sourcename in tutors_dict:
-  print("got known usermap: {} => {}", sourcename, tutors_dict[sourcename])
+  print("got known usermap: {} => {}".format(sourcename, tutors_dict[sourcename]))
 
 # now open it again to append more logs
 username_file = open(LOOKUP_FILE, 'a')
 
-slack_token = os.environ["SLACK_API_TOKEN"]
-print("Got token: {}".format(slack_token))
-sc = SlackClient(slack_token)
-url = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
-channel="CBXDYDGFP" # TEST SLACK
-channel="CBVLC2MU3"
+# connect to Slack
+sc = SlackClient(SLACK_TOKEN)
 
 # connect to RTM API which feeds us stuff that happens
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
@@ -66,7 +68,7 @@ def pretty_time_delta(td):
 
 def get_pending_tutor_cals(now, within=MINUTES_NOTIFY):
   out = []
-  evs = icalevents.events(url=url)
+  evs = icalevents.events(url=CALENDAR_URL)
   #'all_day', 'copy_to', 'description', 'end', 'start', 'summary', 'time_left', 'uid'
   evs.sort(key=lambda ev: now - ev.start, reverse=True)
 
@@ -77,29 +79,10 @@ def get_pending_tutor_cals(now, within=MINUTES_NOTIFY):
   return out
 
 
-def get_next_tutor_cal(now):
-  evs = icalevents.events(url=url)
-  #'all_day', 'copy_to', 'description', 'end', 'start', 'summary', 'time_left', 'uid'
-  evs.sort(key=lambda ev: now - ev.start, reverse=True)
-
-  for ev in evs:
-    if (now - ev.start).total_seconds() < 0:
-      #this is the first one in the future
-      return(ev)
-
-
 def event_is_same(ev1, ev2):
   if not ev1 or not ev2:
     return ev1 == ev2
   return ev1.uid == ev2.uid
-
-
-def get_slack_members():
-  slack_token = os.environ["SLACK_API_TOKEN"]
-  sc = SlackClient(slack_token)
-
-  a = sc.api_call("users.list")
-  return(a)
 
 
 def get_members(members, tutors_dict):
@@ -137,7 +120,7 @@ def match_tutor(next_tutor_cal, tutor_list):
 
 def sendmsg(text, threadid=None):
   kwargs = {
-    'channel': channel,
+    'channel': CHANNEL,
     'text': text,
   }
   if threadid:
@@ -148,18 +131,12 @@ def sendmsg(text, threadid=None):
 
 def message_tutor(slack_tutor, impending_tutor_time):
   impending_tutor_time = pretty_time_delta(impending_tutor_time)
-  message = sendmsg(text=":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time)))
-  return message
+  return sendmsg(":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slack_tutor['id'], slack_tutor['real_name'], (impending_tutor_time)))
 
 
 def message_unknown_tutor(name, impending_tutor_time):
   impending_tutor_time = pretty_time_delta(impending_tutor_time)
-  message = sc.api_call(
-    "chat.postMessage",
-    channel=channel,
-    text=":smile: {}'s shift starts in {}, but I don't know their slack ID. Please reply to this thread with an @mention of their username to let me know who they are!".format(name, (impending_tutor_time))
-  )
-  return message
+  return sendmsg(":smile: {}'s shift starts in {}, but I don't know their slack ID. Please reply to this thread with an @mention of their username to let me know who they are!".format(name, (impending_tutor_time)))
 
 
 name_to_slackid = {}
@@ -184,8 +161,7 @@ def handle_event(event):
     x = prev_msg['calid']
     already_announced[x]['acked'] = True
 
-    # TODO: reply to thread, don't just post a new message
-    sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid))
+    sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
     print("user {} acked tutoring with {}", userid, event['reaction'])
     return
 
@@ -215,15 +191,10 @@ def handle_event(event):
   username_file.flush()
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
-  # TODO: reply to thread, don't just post a new message
-  message = sc.api_call(
-    "chat.postMessage",
-    channel=channel,
-    text="Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid)
-  )
+  sendmsg("Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
 
 while True:
-  members =get_slack_members()
+  members = sc.api_call("users.list")
   get_members(members, tutors_dict)
 
   now = datetime.now(timezone.utc)
@@ -283,8 +254,9 @@ while True:
       who = "<@{}>".format(prev_msg['slackid'])
     else:
       who = "{}".format(prev_msg['sourcename'])
-    # TODO: use real IDs of nicky and josie
-    sendmsg("Oh no! {} hasn't responded. Pinging <@{}> and <@{}>".format(who, NICKY_ID, JOSIE_ID), threadid=msgid)
+
+    ohno_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
+    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who, ohno_text), threadid=msgid)
     del msg_id_to_watch[msgid]
     #del already_announced[calid] #don't delete it from already_announced
 
