@@ -1,22 +1,40 @@
+#!/usr/bin/env python3
+
 from slackclient import SlackClient
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
 import time
 import os
 import re
+import argparse
 
-SLACK_TOKEN = os.environ.get('SLACK_API_TOKEN', '')
-if not SLACK_TOKEN:
-  raise Exception('please set SLACK_API_TOKEN in env')
+parser = argparse.ArgumentParser()
+parser.add_argument('--test', '-t', action='store_true',
+                    help='whether to run in test mode')
+parser.add_argument('--token', '-x', type=str,
+                    default=os.environ.get('SLACK_API_TOKEN', ''),
+                    required=('SLACK_API_TOKEN' not in os.environ),
+                    help='the API token to use')
+args = parser.parse_args()
 
+SLACK_TOKEN = args.token
 CALENDAR_URL = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
-MINUTES_NOTIFY = 10  # should be 5?
-MINUTES_DANGER = 1
-CHANNEL = "CBXDYDGFP" # TEST SLACK
-CHANNEL = "CBVLC2MU3"
 OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
+SLEEP_MINUTES = 1
+
+# nb. test value on left, real value on right
+MINUTES_NOTIFY = args.test and 120 or 10
+MINUTES_DANGER = args.test and 5 or 1
+CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
+
+if args.test:
+  print("snickybot in TEST MODE")
+else:
+  print("snickybot in PROD MODE")
+print("notify {}min, danger {}min".format(MINUTES_NOTIFY, MINUTES_DANGER))
+print()
 
 tutors_dict = {}  # real name to slackid
 
@@ -36,7 +54,7 @@ except IOError:
   pass # probably doesn't exist
 
 for sourcename in tutors_dict:
-  print("got known usermap: {} => {}".format(sourcename, tutors_dict[sourcename]))
+  print("added user from db: {} => {}".format(sourcename, tutors_dict[sourcename]))
 
 # now open it again to append more logs
 username_file = open(LOOKUP_FILE, 'a')
@@ -88,6 +106,9 @@ def event_is_same(ev1, ev2):
 def get_members(members, tutors_dict):
   #Woo Thought this was paginated but:
   #At this time, providing no limit value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience HTTP 500 errors. Resolve this scenario by using pagination.
+  if 'members' not in members:
+    print('got no members??? {}'.format(members))
+    return
   for member in members['members']:
     id = member['id']
     real_name = member['real_name']
@@ -139,41 +160,38 @@ def message_unknown_tutor(name, impending_tutor_time):
   return sendmsg(":smile: {}'s shift starts in {}, but I don't know their slack ID. Please reply to this thread with an @mention of their username to let me know who they are!".format(name, (impending_tutor_time)))
 
 
-name_to_slackid = {}
 msg_id_to_watch = {}
 already_announced = {}
 
-
 def handle_event(event):
-  print('got event: {}'.format(event))
-
   if event['type'] == 'reaction_added':
-    msgid = event['item']['ts']
-    userid = event['user']
+    return handle_event_reaction_added(event)
+  elif event['type'] == 'message':
+    return handle_event_message(event)
 
-    if msgid not in msg_id_to_watch:
-      return  # some other message
-    prev_msg = msg_id_to_watch[msgid]
-    if prev_msg['slackid'] != userid:
-      return  # not the user we care about
-    print('Correct person acked, so deleting msgid {} from msg_id_to_watch:\n{}'.format(msgid, msg_id_to_watch))
-    del msg_id_to_watch[msgid]
-    x = prev_msg['calid']
-    already_announced[x]['acked'] = True
 
-    sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
-    print("user {} acked tutoring with {}", userid, event['reaction'])
-    return
+def handle_event_reaction_added(event):
+  msgid = event['item']['ts']
+  userid = event['user']
 
-  if event['type'] != "message":
-    return  # ignore for now
+  if msgid not in msg_id_to_watch:
+    return  # some other message
+  prev_msg = msg_id_to_watch[msgid]
+  if prev_msg['slackid'] != userid:
+    return  # not the user we care about
+  print('Correct person acked, so deleting msgid {} from msg_id_to_watch:\n{}'.format(msgid, msg_id_to_watch))
+  del msg_id_to_watch[msgid]
+  x = prev_msg['calid']
+  already_announced[x]['acked'] = True
 
+  sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
+  print("user {} acked tutoring with {}", userid, event['reaction'])
+
+
+def handle_event_message(event):
   if 'thread_ts' not in event:
     return  # not a thread reply
 
-  print('msg_id_to_watch: {}'.format(msg_id_to_watch))
-  print('already_announced: {}'.format(already_announced))
-  print()
   threadid = event['thread_ts']
   if threadid not in msg_id_to_watch:
     return  # not a thread we care about
@@ -192,6 +210,7 @@ def handle_event(event):
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
   sendmsg("Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
+
 
 while True:
   members = sc.api_call("users.list")
@@ -223,7 +242,7 @@ while True:
       slackid = None
 
     # save for later
-    print(m)
+    print("Sent message to channel: {}".format(m['message']['text']))
     msg_id_to_watch[m['ts']] = {'sourcename': name, 'slackid': slackid, 'calid': calid}
     already_announced[calid] = {
       'cal': next_tutor_cal,
@@ -246,7 +265,7 @@ while True:
     prev_msg = msg_id_to_watch[msgid]
 
     minutes_away = (unacked_cal.start - now).total_seconds() / 60  # negative if we've gone past no
-    print('minutes_away: {}'.format(minutes_away))
+    print('minutes_away ({}): {}'.format(prev_msg['sourcename'], minutes_away))
     if minutes_away > MINUTES_DANGER:
       continue
 
@@ -261,12 +280,12 @@ while True:
     #del already_announced[calid] #don't delete it from already_announced
 
   # sleep for 60s but check if we have events
-  for i in range(0, 60):
+  for i in range(0, max(1, SLEEP_MINUTES * 60)):
     events = sc.rtm_read()
     for event in events:
       handle_event(event)
     time.sleep(1)
-  print(".", end="")
+  print(".")
 
 
 
