@@ -9,6 +9,8 @@ RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
 MINUTES_NOTIFY = 10  # should be 5?
 MINUTES_DANGER = 1
+NICKY_ID = 'UBV5SETED'
+JOSIE_ID = 'UBZ7T5C30'
 
 tutors_dict = {}  # real name to slackid
 
@@ -37,7 +39,8 @@ slack_token = os.environ["SLACK_API_TOKEN"]
 print("Got token: {}".format(slack_token))
 sc = SlackClient(slack_token)
 url = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
-channel="CBXDYDGFP"
+channel="CBXDYDGFP" # TEST SLACK
+channel="CBVLC2MU3"
 
 # connect to RTM API which feeds us stuff that happens
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
@@ -163,10 +166,6 @@ already_announced = {}
 
 
 def handle_event(event):
-  print('got an event')
-  print('msg_id_to_watch: {}'.format(msg_id_to_watch))
-  print('already_announced: {}'.format(already_announced))
-  print()
 
   if event['type'] == 'reaction_added':
     msgid = event['item']['ts']
@@ -193,6 +192,9 @@ def handle_event(event):
   if 'thread_ts' not in event:
     return  # not a thread reply
 
+  print('msg_id_to_watch: {}'.format(msg_id_to_watch))
+  print('already_announced: {}'.format(already_announced))
+  print()
   threadid = event['thread_ts']
   if threadid not in msg_id_to_watch:
     return  # not a thread we care about
@@ -222,7 +224,10 @@ while True:
   get_members(members, tutors_dict)
 
   now = datetime.now(timezone.utc)
+  #try:
   pending = get_pending_tutor_cals(now)
+  #except TimeoutError:
+  #  print('TimeoutError. Skipping for now.')
   for next_tutor_cal in pending:
     # SO it turns out that Google thinks -1 is a great uid for all events. 
     calid = '{}-{}'.format(next_tutor_cal.start, next_tutor_cal.summary)
@@ -244,6 +249,7 @@ while True:
       slackid = None
 
     # save for later
+    print(m)
     msg_id_to_watch[m['ts']] = {'sourcename': name, 'slackid': slackid, 'calid': calid}
     already_announced[calid] = {
       'cal': next_tutor_cal,
@@ -275,7 +281,7 @@ while True:
     else:
       who = "{}".format(prev_msg['sourcename'])
     # TODO: use real IDs of nicky and josie
-    sendmsg("Oh no! {} hasn't responded.  @nicky and @jspongberg!".format(who), threadid=msgid)
+    sendmsg("Oh no! {} hasn't responded. Pinging <@{}> and <@{}>".format(who, NICKY_ID, JOSIE_ID), threadid=msgid)
     del msg_id_to_watch[msgid]
     #del already_announced[calid] #don't delete it from already_announced
 
@@ -285,7 +291,6 @@ while True:
     for event in events:
       handle_event(event)
     time.sleep(1)
-
 
 
 
