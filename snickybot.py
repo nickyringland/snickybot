@@ -166,6 +166,7 @@ already_announced = {}
 
 
 def handle_event(event):
+  print('got event: {}'.format(event))
 
   if event['type'] == 'reaction_added':
     msgid = event['item']['ts']
@@ -264,7 +265,7 @@ while True:
     already_acked = data['acked']
     if already_acked:
       # this has already been ack'd by an emoji.
-      print('skipping {} as it was already acked'.format(msgid))
+      print('Checking upcoming cals. Skipping {} as it was already acked'.format(msgid))
       continue
     if msgid not in msg_id_to_watch:
       # Time's up, bot alerted Nicky/Josie, we removed msg.
@@ -291,6 +292,7 @@ while True:
     for event in events:
       handle_event(event)
     time.sleep(1)
+  print(".", end="")
 
 
 
