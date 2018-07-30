@@ -135,12 +135,14 @@ def match_tutor(next_tutor_cal, tutor_list):
     return None
 
 
-def sendmsg(text, threadid=None): # TODO thread stuff later
-  message = sc.api_call(
-    "chat.postMessage",
-    channel=channel,
-    text=text
-  )
+def sendmsg(text, threadid=None):
+  kwargs = {
+    'channel': channel,
+    'text': text,
+  }
+  if threadid:
+    kwargs['thread_ts'] = threadid
+  message = sc.api_call("chat.postMessage", **kwargs)
   return message
 
 
