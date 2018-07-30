@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from slackclient import SlackClient
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
