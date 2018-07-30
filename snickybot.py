@@ -269,7 +269,7 @@ while True:
 
     who_text = format_real_name(prev_msg['sourcename'])
     ohno_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
-    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who, ohno_text), threadid=msgid)
+    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who_text, ohno_text), threadid=msgid)
     del msg_id_to_watch[msgid]
 
   # sleep for 60s but check if we have events
