@@ -30,7 +30,7 @@ UTCHOURS_ACTIVE_START = (9 - CHALLENGE_TIME_OFFSET) % 24
 UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
 
 # nb. test value on left, real value on right
-MINUTES_NOUSERS = args.test and 60 or 30  # max is 60, won't be checked before current hour
+MINUTES_NOUSERS = args.test and 40 or 20  # max is 60, won't be checked before current hour
 MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
