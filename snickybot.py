@@ -7,6 +7,7 @@ import time
 import os
 import re
 import argparse
+import random  # for testing
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--test', '-t', action='store_true',
@@ -37,14 +38,11 @@ MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
 
-assert(MINUTES_NOUSERS > MINUTES_NOTIFY)
-assert(MINUTES_NOTIFY > MINUTES_DANGER)
-
 if args.test:
   print("snickybot in TEST MODE")
 else:
   print("snickybot in PROD MODE")
-print("notify {}min, danger {}min".format(MINUTES_NOTIFY, MINUTES_DANGER))
+print("nouser warning {}min, notify {}min, danger {}min".format(MINUTES_NOUSERS, MINUTES_NOTIFY, MINUTES_DANGER))
 print()
 
 tutors_dict = {}  # real name to slackid
@@ -134,12 +132,13 @@ def get_members(members, tutors_dict):
   # Woo Thought this was paginated but:
   # At this time, providing no limit value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience HTTP 500 errors. Resolve this scenario by using pagination.
   if 'members' not in members:
-    print('Got no members, maybe rate-limited: {}'.format(members))
+    print('got no members, maybe rate-limited: {}'.format(members))
     return
   for member in members['members']:
     slackid = member['id']
     real_name = member['real_name']
     if real_name not in tutors_dict:
+      print('got member: {} => {}'.format(real_name, slackid))
       tutors_dict[real_name] = slackid
 
 
@@ -155,7 +154,7 @@ def extract_name_from_cal(next_tutor_cal):
 def sendmsg(text, threadid=None, attach=None):
   if args.silent:
     print('Silent mode, not sending message (threadid={}): {}'.format(threadid, text))
-    return {'ts': 'TODO'}
+    return {'ts': 'TODO-{}'.format(random.random())}
 
   kwargs = {
     'channel': CHANNEL,
@@ -204,15 +203,15 @@ def handle_event_reaction_added(event):
   slackid = tutors_dict.get(prev_msg['sourcename'], '')
   if slackid != userid:
     # if we don't know their slackid then they can't ack this :(
+    print("[{}] got reaction from non-target user: {}".format(msgid, event['reaction']))
     return  # not the user we care about
 
-  print('Correct person acked, so deleting msgid {} from msg_id_to_watch'.format(msgid))
   del msg_id_to_watch[msgid]
   calid = prev_msg['calid']
   already_announced[calid]['acked'] = True
 
   sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
-  print("user {} acked tutoring with {}".format(userid, event['reaction']))
+  print("[{}] slack user {} acked tutoring with: {}".format(msgid, userid, event['reaction']))
   reaction_file.write('{},{}\n'.format(userid, event['reaction']))
   reaction_file.flush()
 
@@ -226,19 +225,19 @@ def handle_event_message(event):
     return  # not a thread we care about
 
   data = msg_id_to_watch[threadid]
-  print("got reply to interesting thread: {} ({})".format(event['text'], msg_id_to_watch[threadid]))
 
   out = RE_SLACKID.match(event['text'])
   if not out:
+    print("[{}] got reply to watched thread, ignoring: {}".format(threadid, event['text']))
     return  # no userid
   foundid = out.group(1)
   tutors_dict[data['sourcename']] = foundid
-  print("connected '{}' to Slack: {}".format(data['sourcename'], foundid))
+  print("[{}] connected '{}' to Slack: {}".format(threadid, data['sourcename'], foundid))
   username_file.write("{},{}\n".format(foundid, data['sourcename']))
   username_file.flush()
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
-  sendmsg("Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
+  sendmsg("Thanks! I've updated {}'s Slack username to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
 
 
 checked_hour = None  # the hour checked up to
@@ -247,6 +246,7 @@ ohno_users_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
 while True:
   members = sc.api_call("users.list")
   get_members(members, tutors_dict)
+  print()
 
   now = datetime.now(timezone.utc)  # calendar data is in UTC
 
@@ -276,7 +276,7 @@ while True:
     if in_minutes >= MINUTES_NOTIFY:
       break
 
-    # SO it turns out that Google thinks -1 is a great uid for all events. 
+    # SO it turns out that Google thinks -1 is a great uid for all events.
     calid = '{}-{}'.format(next_tutor_cal.start, next_tutor_cal.summary)
     if calid in already_announced:
       continue  # don't announce a second time
@@ -314,21 +314,25 @@ while True:
     sendmsg("<!here> Warning! There's no tutors rostered on at {}:00! ({})".format(local_hour, ohno_users_text), attach=attach)
 
   for calid in list(already_announced.keys()):  # we might modify this during iteration
-    # TODO: Expire sessions a long time after they start??
     data = already_announced[calid]
-    unacked_cal = data['cal']
-    msgid = data['msgid']
-    if data['acked']:
-      # this has already been ack'd by an emoji.
-      print('Checking upcoming cals. Skipping {} as it was already acked'.format(msgid))
+    cal = data['cal']
+    if cal.end < now:
+      print('[{}] expiring calendar entry, past end time', msgid)
+      del already_announced[calid]
+      del msg_id_to_watch[msgid]
       continue
-    if msgid not in msg_id_to_watch:
-      # Time's up, bot alerted Nicky/Josie, we removed msg.
-      continue
-    prev_msg = msg_id_to_watch[msgid]
 
-    minutes_away = (unacked_cal.start - now).total_seconds() / 60  # negative if we've gone past no
-    print('minutes_away ({}): {}'.format(prev_msg['sourcename'], minutes_away))
+    if data['acked']:
+      continue  # this has already been ack'd by an emoji.
+
+    msgid = data['msgid']
+    prev_msg = msg_id_to_watch.get(msgid, None)
+    if not prev_msg:
+      continue  # Time's up, bot alerted Nicky/Josie, we removed msg.
+
+    event_starts = (cal.start - now)
+    minutes_away = event_starts.total_seconds() / 60  # negative if we've gone past no
+    print('[{}] {} shift in: {}'.format(msgid, prev_msg['sourcename'], pretty_time_delta(event_starts)))
     if minutes_away > MINUTES_DANGER:
       continue
 
