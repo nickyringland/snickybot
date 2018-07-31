@@ -15,6 +15,8 @@ parser.add_argument('--token', '-x', type=str,
                     default=os.environ.get('SLACK_API_TOKEN', ''),
                     required=('SLACK_API_TOKEN' not in os.environ),
                     help='the API token to use')
+parser.add_argument('--silent', '-s', action='store_true',
+                    help='whether to skip sending messages (for testing)')
 args = parser.parse_args()
 
 SLACK_TOKEN = args.token
@@ -34,6 +36,9 @@ MINUTES_NOUSERS = args.test and 40 or 20  # max is 60, won't be checked before c
 MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
+
+assert(MINUTES_NOUSERS > MINUTES_NOTIFY)
+assert(MINUTES_NOTIFY > MINUTES_DANGER)
 
 if args.test:
   print("snickybot in TEST MODE")
@@ -106,15 +111,15 @@ def pretty_time_delta(td):
     return '%ds' % (seconds)
 
 
-def get_pending_tutor_cals(now, within=MINUTES_NOTIFY):
+def get_pending_tutor_cals(now):
   out = []
   evs = icalevents.events(url=CALENDAR_URL)
   #'all_day', 'copy_to', 'description', 'end', 'start', 'summary', 'time_left', 'uid'
   evs.sort(key=lambda ev: now - ev.start, reverse=True)
 
   for ev in evs:
-    in_minutes = (now - ev.start).total_seconds() / 60.0
-    if in_minutes * -1 < within and in_minutes < 0:
+    # is this in the future
+    if (ev.start - now).total_seconds() > 0:
       out.append(ev)
   return out
 
@@ -148,6 +153,10 @@ def extract_name_from_cal(next_tutor_cal):
 
 
 def sendmsg(text, threadid=None, attach=None):
+  if args.silent:
+    print('Silent mode, not sending message (threadid={}): {}'.format(threadid, text))
+    return {'ts': 'TODO'}
+
   kwargs = {
     'channel': CHANNEL,
     'text': text,
@@ -254,10 +263,18 @@ while True:
   pending = get_pending_tutor_cals(now)
   #except TimeoutError:
   #  print('TimeoutError. Skipping for now.')
+  print("got {} pending cal events at {}".format(len(pending), now))
   for next_tutor_cal in pending:
     if next_tutor_cal.start.hour == next_check_hour:
       # got an event starting in the next hour
+      if notify_missing_tutors:
+        print("got event starting at {}:00, don't need to notify: {}".format(next_check_hour + CHALLENGE_TIME_OFFSET, next_tutor_cal))
       notify_missing_tutors = False
+
+    # don't notify them, not close enoughb
+    in_minutes = (next_tutor_cal.start - now).total_seconds() / 60.0
+    if in_minutes >= MINUTES_NOTIFY:
+      break
 
     # SO it turns out that Google thinks -1 is a great uid for all events. 
     calid = '{}-{}'.format(next_tutor_cal.start, next_tutor_cal.summary)
