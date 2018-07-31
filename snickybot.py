@@ -30,7 +30,8 @@ UTCHOURS_ACTIVE_START = (9 - CHALLENGE_TIME_OFFSET) % 24
 UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
 
 # nb. test value on left, real value on right
-MINUTES_NOTIFY = args.test and 240 or 10
+MINUTES_NOUSERS = args.test and 60 or 30  # max is 60, won't be checked before current hour
+MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
 
@@ -243,9 +244,7 @@ while True:
   # do we need to notify that we're missing tutors?
   notify_missing_tutors = False
   next_check_hour = (now + timedelta(hours=1)).hour
-  minutes_left = 60 - (now.minute)
-  if minutes_left < MINUTES_NOTIFY:
-    # only warn if we can't notify anyone else
+  if 60 - now.minute < MINUTES_NOUSERS:
     if checked_hour != next_check_hour and is_checked_hour(next_check_hour):
       # if we find a valid hour below, set this to False
       notify_missing_tutors = True
