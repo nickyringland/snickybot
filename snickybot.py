@@ -25,7 +25,12 @@ REACTION_FILE = "reaction_log"
 OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
 SLEEP_MINUTES = 1
 
+CHALLENGE_TIME_OFFSET = 10  # fixed hour offset
+UTCHOURS_ACTIVE_START = (9 - CHALLENGE_TIME_OFFSET) % 24
+UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
+
 # nb. test value on left, real value on right
+MINUTES_NOUSERS = args.test and 60 or 30  # max is 60, won't be checked before current hour
 MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
@@ -68,6 +73,14 @@ sc = SlackClient(SLACK_TOKEN)
 if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
   raise Exception("couldn't connect to RTM api")
 sc.rtm_send_message("welcome-test", "test")
+
+
+def is_checked_hour(hour):
+  if UTCHOURS_ACTIVE_START > UTCHOURS_ACTIVE_END:
+    # start later than end
+    return hour >= UTCHOURS_ACTIVE_START or hour < UTCHOURS_ACTIVE_END
+  # normal contiguous range
+  return hour >= UTCHOURS_ACTIVE_START and hour < UTCHOURS_ACTIVE_END
 
 
 def format_real_name(real_name):
@@ -134,13 +147,15 @@ def extract_name_from_cal(next_tutor_cal):
   return(name)
 
 
-def sendmsg(text, threadid=None):
+def sendmsg(text, threadid=None, attach=None):
   kwargs = {
     'channel': CHANNEL,
     'text': text,
   }
   if threadid:
     kwargs['thread_ts'] = threadid
+  if attach:
+    kwargs['attachments'] = attach
   message = sc.api_call("chat.postMessage", **kwargs)
   if threadid:
     print('Replied to thead {}: {}'.format(threadid, text))
@@ -217,16 +232,33 @@ def handle_event_message(event):
   sendmsg("Thanks! I've updated {}'s slack ID to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
 
 
+checked_hour = None  # the hour checked up to
+ohno_users_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
+
 while True:
   members = sc.api_call("users.list")
   get_members(members, tutors_dict)
 
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc)  # calendar data is in UTC
+
+  # do we need to notify that we're missing tutors?
+  notify_missing_tutors = False
+  next_check_hour = (now + timedelta(hours=1)).hour
+  if 60 - now.minute < MINUTES_NOUSERS:
+    if checked_hour != next_check_hour and is_checked_hour(next_check_hour):
+      # if we find a valid hour below, set this to False
+      notify_missing_tutors = True
+    checked_hour = next_check_hour
+
   #try:
   pending = get_pending_tutor_cals(now)
   #except TimeoutError:
   #  print('TimeoutError. Skipping for now.')
   for next_tutor_cal in pending:
+    if next_tutor_cal.start.hour == next_check_hour:
+      # got an event starting in the next hour
+      notify_missing_tutors = False
+
     # SO it turns out that Google thinks -1 is a great uid for all events. 
     calid = '{}-{}'.format(next_tutor_cal.start, next_tutor_cal.summary)
     if calid in already_announced:
@@ -247,6 +279,22 @@ while True:
       'msgid': m['ts'],
       'acked': False,
     }
+
+  if notify_missing_tutors:
+    local_hour = checked_hour + CHALLENGE_TIME_OFFSET
+    attach = [
+      {
+        "fallback": "Add your name in the roster here: https://python.gl/tutor-roster",
+        "actions": [
+          {
+            "type": "button",
+            "text": "Update Roster",
+            "url": "https://python.gl/tutor-roster",
+          },
+        ],
+      },
+    ]
+    sendmsg("<!here> Warning! There's no tutors rostered on at {}:00! ({})".format(local_hour, ohno_users_text), attach=attach)
 
   for calid in list(already_announced.keys()):  # we might modify this during iteration
     # TODO: Expire sessions a long time after they start??
@@ -269,7 +317,7 @@ while True:
 
     who_text = format_real_name(prev_msg['sourcename'])
     ohno_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
-    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who_text, ohno_text), threadid=msgid)
+    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who_text, ohno_users_text), threadid=msgid)
     del msg_id_to_watch[msgid]
 
   # sleep for 60s but check if we have events
