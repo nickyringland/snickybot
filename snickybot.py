@@ -316,6 +316,7 @@ while True:
   for calid in list(already_announced.keys()):  # we might modify this during iteration
     data = already_announced[calid]
     cal = data['cal']
+    msgid = data['msgid']
     if cal.end < now:
       print('[{}] expiring calendar entry, past end time', msgid)
       del already_announced[calid]
@@ -325,7 +326,6 @@ while True:
     if data['acked']:
       continue  # this has already been ack'd by an emoji.
 
-    msgid = data['msgid']
     prev_msg = msg_id_to_watch.get(msgid, None)
     if not prev_msg:
       continue  # Time's up, bot alerted Nicky/Josie, we removed msg.
