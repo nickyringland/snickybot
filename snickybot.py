@@ -298,7 +298,8 @@ while True:
     }
 
   if notify_missing_tutors:
-    local_hour = checked_hour + CHALLENGE_TIME_OFFSET
+    # timezones are hard.
+    local_hour = (checked_hour + CHALLENGE_TIME_OFFSET) % 24
     attach = [
       {
         "fallback": "Add your name in the roster here: https://python.gl/tutor-roster",
