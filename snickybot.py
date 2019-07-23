@@ -2,6 +2,7 @@
 
 import slack
 import asyncio
+import redis
 from cachetools.func import ttl_cache
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
@@ -23,12 +24,15 @@ parser.add_argument('--silent', '-s', action='store_true',
 args = parser.parse_args()
 
 SLACK_TOKEN = args.token
-CALENDAR_URL = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
-RE_SLACKID = re.compile('<@(\w+)>')
-LOOKUP_FILE = "username_log"
-OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
-SLEEP_MINUTES = 1
+CALENDAR_URL = os.environ['CALENDAR_URL']
+OHNO_USERS = os.environ['OHNO_USERS'].split(',')
+CHANNEL = os.environ['CHANNEL']
+REDIS_ADDRESS = os.environ['REDIS_ADDRESS']
+REDIS_DB = int(os.environ['REDIS_DB'])
 
+RE_SLACKID = re.compile('<@(\w+)>')
+AMENDED_REALNAMETOSLACK_KEY = 'snickybot:amended_realnametoslack'
+SLEEP_MINUTES = 1
 CHALLENGE_TIME_OFFSET = 10  # fixed hour offset
 UTCHOURS_ACTIVE_START = (9 - CHALLENGE_TIME_OFFSET) % 24
 UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
@@ -37,8 +41,6 @@ UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
 MINUTES_NOUSERS = args.test and 40 or 20  # max is 60, won't be checked before current hour
 MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
-#CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
-CHANNEL = 'CLN57A7J8'
 
 if args.test:
   print("snickybot in TEST MODE")
@@ -47,31 +49,9 @@ else:
 print("nouser warning {}min, notify {}min, danger {}min".format(MINUTES_NOUSERS, MINUTES_NOTIFY, MINUTES_DANGER))
 print()
 
-tutors_dict = {}  # real name to slackid
-
-# read whole file and fill it in
-try:
-  with open(LOOKUP_FILE) as f:
-    for line in f:
-      line = line.strip()
-      parts = line.split(',', 1)
-      if len(parts) != 2:
-        if line:
-          print("bad line: {}".format(line))
-        continue
-      foundid, sourcename = parts
-      tutors_dict[sourcename] = foundid
-except IOError:
-  pass # probably doesn't exist
-
-for sourcename in tutors_dict:
-  print("added user from db: {} => {}".format(sourcename, tutors_dict[sourcename]))
-
-# now open it again to append more logs
-username_file = open(LOOKUP_FILE, 'a')
-
-# connect to Slack
+# connect to things
 sc = slack.WebClient(SLACK_TOKEN, run_async=True)
+r = redis.Redis(host=REDIS_ADDRESS, db=REDIS_DB)
 
 
 def is_checked_hour(hour):
@@ -80,13 +60,6 @@ def is_checked_hour(hour):
     return hour >= UTCHOURS_ACTIVE_START or hour < UTCHOURS_ACTIVE_END
   # normal contiguous range
   return hour >= UTCHOURS_ACTIVE_START and hour < UTCHOURS_ACTIVE_END
-
-
-def format_real_name(real_name):
-  if real_name in tutors_dict:
-    slackid = tutors_dict[real_name]
-    return '<@{}>'.format(slackid)
-  return '{}'.format(real_name)
 
 
 def pretty_time_delta(td):
@@ -169,15 +142,24 @@ async def message_tutor(slackid, name, impending_tutor_time):
   return sendmsg(text)
 
 
+tutors_dict = {}        # real name to slackid
 msg_id_to_watch = {}    # messages posted about calendar events (contains {sourcename, calid})
 already_announced = {}  # calendar events processed and posted about
 
 
-def upsert_tutor(member):
+def format_real_name(real_name):
+  if real_name in tutors_dict:
+    slackid = tutors_dict[real_name]
+    return '<@{}>'.format(slackid)
+  return '{}'.format(real_name)
+
+
+def add_tutor(member):
   slackid = member['id']
   real_name = member['real_name']
-  print('got member: {} => {}'.format(real_name, slackid))
-  tutors_dict[real_name] = slackid
+  if real_name not in tutors_dict:
+    print('got member: {} => {}'.format(real_name, slackid))
+    tutors_dict[real_name] = slackid
 
 
 async def load_tutors_dict():
@@ -187,19 +169,24 @@ async def load_tutors_dict():
   assert response['ok']
 
   for member in response['members']:
-    upsert_tutor(member)
+    add_tutor(member)
+
+  for (real_name, slackid) in r.hgetall(AMENDED_REALNAMETOSLACK_KEY).items():
+    real_name = real_name.decode('utf-8')
+    slackid = slackid.decode('utf-8')
+    print('loading amended member: {} => {}'.format(real_name, slackid))
 
 
 @slack.RTMClient.run_on(event='member_joined_channel')
 async def rtm_member_joined_channel(data, **kwargs):
   response = await sc.users_info(user=data['user'])
   assert response['ok']
-  upsert_tutor(response['user'])
+  add_tutor(response['user'])
 
 
 @slack.RTMClient.run_on(event='user_change')
 async def rtm_user_change(data, **kwargs):
-  upsert_tutor(data['user'])
+  add_tutor(data['user'])
 
 
 @slack.RTMClient.run_on(event='reaction_added')
@@ -244,9 +231,8 @@ async def rtm_message(data, **kwargs):
     return  # no userid
   foundid = out.group(1)
   tutors_dict[data['sourcename']] = foundid
+  r.hset(AMENDED_REALNAMETOSLACK_KEY, data['sourcename'].encode('utf-8'), foundid.encode('utf-8'))
   print("[{}] connected '{}' to Slack: {}".format(threadid, data['sourcename'], foundid))
-  username_file.write("{},{}\n".format(foundid, data['sourcename']))
-  username_file.flush()
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
   await sendmsg("Thanks! I've updated {}'s Slack username to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
