@@ -2,6 +2,7 @@
 
 import slack
 import asyncio
+from cachetools.func import ttl_cache
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
 import time
@@ -25,7 +26,6 @@ SLACK_TOKEN = args.token
 CALENDAR_URL = 'https://calendar.google.com/calendar/ical/ncss.edu.au_7hiaq9tlca1lsgfksjss4ejc4s%40group.calendar.google.com/private-23775cab8b8397efb35dd7f2b6e67d84/basic.ics'
 RE_SLACKID = re.compile('<@(\w+)>')
 LOOKUP_FILE = "username_log"
-REACTION_FILE = "reaction_log"
 OHNO_USERS = ['UBV5SETED', 'UBZ7T5C30']  # nicky and josie
 SLEEP_MINUTES = 1
 
@@ -69,7 +69,6 @@ for sourcename in tutors_dict:
 
 # now open it again to append more logs
 username_file = open(LOOKUP_FILE, 'a')
-reaction_file = open(REACTION_FILE, 'a')
 
 # connect to Slack
 sc = slack.WebClient(SLACK_TOKEN, run_async=True)
@@ -106,9 +105,14 @@ def pretty_time_delta(td):
     return '%ds' % (seconds)
 
 
+@ttl_cache(ttl=60*5)
+def get_events():
+  return icalevents.events(url=CALENDAR_URL)
+
+
 def get_pending_tutor_cals(now):
   out = []
-  evs = icalevents.events(url=CALENDAR_URL)
+  evs = get_events()
   #'all_day', 'copy_to', 'description', 'end', 'start', 'summary', 'time_left', 'uid'
   evs.sort(key=lambda ev: now - ev.start, reverse=True)
 
@@ -123,17 +127,6 @@ def event_is_same(ev1, ev2):
   if not ev1 or not ev2:
     return ev1 == ev2
   return ev1.uid == ev2.uid
-
-
-def get_members(members, tutors_dict):
-  # Woo Thought this was paginated but:
-  # At this time, providing no limit value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience HTTP 500 errors. Resolve this scenario by using pagination.
-  for member in members:
-    slackid = member['id']
-    real_name = member['real_name']
-    if real_name not in tutors_dict:
-      print('got member: {} => {}'.format(real_name, slackid))
-      tutors_dict[real_name] = slackid
 
 
 def extract_name_from_cal(next_tutor_cal):
@@ -158,12 +151,13 @@ async def sendmsg(text, threadid=None, attach=None):
     kwargs['thread_ts'] = threadid
   if attach:
     kwargs['attachments'] = attach
-  message = await sc.chat_postMessage(**kwargs)
+  response = await sc.chat_postMessage(**kwargs)
+  assert response['ok']
   if threadid:
     print('Replied to thead {}: {}'.format(threadid, text))
   else:
     print('Messaged channel: {}'.format(text))
-  return message
+  return response['message']
 
 
 async def message_tutor(slackid, name, impending_tutor_time):
@@ -179,8 +173,38 @@ msg_id_to_watch = {}    # messages posted about calendar events (contains {sourc
 already_announced = {}  # calendar events processed and posted about
 
 
+def upsert_tutor(member):
+  slackid = member['id']
+  real_name = member['real_name']
+  print('got member: {} => {}'.format(real_name, slackid))
+  tutors_dict[real_name] = slackid
+
+
+async def load_tutors_dict():
+  # Woo Thought this was paginated but:
+  # At this time, providing no limit value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience HTTP 500 errors. Resolve this scenario by using pagination.
+  response = await sc.users_list()
+  assert response['ok']
+
+  for member in response['members']:
+    upsert_tutor(member)
+
+
+@slack.RTMClient.run_on(event='member_joined_channel')
+async def rtm_member_joined_channel(data, **kwargs):
+  response = await sc.users_info(user=data['user'])
+  assert response['ok']
+  upsert_tutor(response['user'])
+
+
+@slack.RTMClient.run_on(event='user_change')
+async def rtm_user_change(data, **kwargs):
+  upsert_tutor(data['user'])
+
+
 @slack.RTMClient.run_on(event='reaction_added')
-async def handle_event_reaction_added(**event):
+async def rtm_reaction_added(data, **kwargs):
+  event = data
   msgid = event['item']['ts']
   userid = event['user']
 
@@ -200,12 +224,11 @@ async def handle_event_reaction_added(**event):
 
   await sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
   print("[{}] slack user {} acked tutoring with: {}".format(msgid, userid, event['reaction']))
-  reaction_file.write('{},{}\n'.format(userid, event['reaction']))
-  reaction_file.flush()
 
 
 @slack.RTMClient.run_on(event='message')
-async def handle_event_message(**event):
+async def rtm_message(data, **kwargs):
+  event = data
   if 'thread_ts' not in event:
     return  # not a thread reply
 
@@ -234,11 +257,6 @@ ohno_users_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
 
 async def process_calendar():
   global checked_hour
-  response = await sc.users_list()
-  # TODO handle bad response
-  get_members(response['members'], tutors_dict)
-  print()
-
   now = datetime.now(timezone.utc)  # calendar data is in UTC
 
   # do we need to notify that we're missing tutors?
@@ -342,6 +360,7 @@ async def process_calendar_loop():
 
 
 async def main():
+  await load_tutors_dict()
   await asyncio.gather(slack.RTMClient(token=SLACK_TOKEN, run_async=True).start(), process_calendar_loop())
 
 
