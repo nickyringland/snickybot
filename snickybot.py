@@ -3,6 +3,7 @@
 import slack
 import asyncio
 import redis
+import logging
 from cachetools.func import ttl_cache
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
@@ -11,6 +12,8 @@ import os
 import re
 import argparse
 import random  # for testing
+
+logging.basicConfig(level=logging.INFO)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--test', '-t', action='store_true',
@@ -43,11 +46,10 @@ MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
 
 if args.test:
-  print("snickybot in TEST MODE")
+  logging.info("snickybot in TEST MODE")
 else:
-  print("snickybot in PROD MODE")
-print("nouser warning {}min, notify {}min, danger {}min".format(MINUTES_NOUSERS, MINUTES_NOTIFY, MINUTES_DANGER))
-print()
+  logging.info("snickybot in PROD MODE")
+logging.info("nouser warning {}min, notify {}min, danger {}min".format(MINUTES_NOUSERS, MINUTES_NOTIFY, MINUTES_DANGER))
 
 # connect to things
 sc = slack.WebClient(SLACK_TOKEN, run_async=True)
@@ -107,13 +109,13 @@ def extract_name_from_cal(next_tutor_cal):
   summary = next_tutor_cal.summary
   summary = summary.replace(chr(65288), '(')  # ??? some people have a weird start bracket
   name = summary.replace('NCSS Tutoring (','')[:-1]
-  print('Name from calendar: {} => {}'.format(summary, name))
+  logging.info('Name from calendar: {} => {}'.format(summary, name))
   return(name)
 
 
 async def sendmsg(text, threadid=None, attach=None):
   if args.silent:
-    print('Silent mode, not sending message (threadid={}): {}'.format(threadid, text))
+    logging.info('Silent mode, not sending message (threadid={}): {}'.format(threadid, text))
     return {'ts': 'TODO-{}'.format(random.random())}
 
   kwargs = {
@@ -127,9 +129,9 @@ async def sendmsg(text, threadid=None, attach=None):
   response = await sc.chat_postMessage(**kwargs)
   assert response['ok']
   if threadid:
-    print('Replied to thead {}: {}'.format(threadid, text))
+    logging.info('Replied to thead {}: {}'.format(threadid, text))
   else:
-    print('Messaged channel: {}'.format(text))
+    logging.info('Messaged channel: {}'.format(text))
   return response['message']
 
 
@@ -158,7 +160,7 @@ def add_tutor(member):
   slackid = member['id']
   real_name = member['real_name']
   if real_name not in tutors_dict:
-    print('got member: {} => {}'.format(real_name, slackid))
+    logging.info('got member: {} => {}'.format(real_name, slackid))
     tutors_dict[real_name] = slackid
 
 
@@ -174,7 +176,7 @@ async def load_tutors_dict():
   for (real_name, slackid) in r.hgetall(AMENDED_REALNAMETOSLACK_KEY).items():
     real_name = real_name.decode('utf-8')
     slackid = slackid.decode('utf-8')
-    print('loading amended member: {} => {}'.format(real_name, slackid))
+    logging.info('loading amended member: {} => {}'.format(real_name, slackid))
 
 
 @slack.RTMClient.run_on(event='member_joined_channel')
@@ -202,7 +204,7 @@ async def rtm_reaction_added(data, **kwargs):
   slackid = tutors_dict.get(prev_msg['sourcename'], '')
   if slackid != userid:
     # if we don't know their slackid then they can't ack this :(
-    print("[{}] got reaction from non-target user: {}".format(msgid, event['reaction']))
+    logging.info("[{}] got reaction from non-target user: {}".format(msgid, event['reaction']))
     return  # not the user we care about
 
   del msg_id_to_watch[msgid]
@@ -210,7 +212,7 @@ async def rtm_reaction_added(data, **kwargs):
   already_announced[calid]['acked'] = True
 
   await sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
-  print("[{}] slack user {} acked tutoring with: {}".format(msgid, userid, event['reaction']))
+  logging.info("[{}] slack user {} acked tutoring with: {}".format(msgid, userid, event['reaction']))
 
 
 @slack.RTMClient.run_on(event='message')
@@ -227,12 +229,12 @@ async def rtm_message(data, **kwargs):
 
   out = RE_SLACKID.match(event['text'])
   if not out:
-    print("[{}] got reply to watched thread, ignoring: {}".format(threadid, event['text']))
+    logging.info("[{}] got reply to watched thread, ignoring: {}".format(threadid, event['text']))
     return  # no userid
   foundid = out.group(1)
   tutors_dict[data['sourcename']] = foundid
   r.hset(AMENDED_REALNAMETOSLACK_KEY, data['sourcename'].encode('utf-8'), foundid.encode('utf-8'))
-  print("[{}] connected '{}' to Slack: {}".format(threadid, data['sourcename'], foundid))
+  logging.info("[{}] connected '{}' to Slack: {}".format(threadid, data['sourcename'], foundid))
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
   await sendmsg("Thanks! I've updated {}'s Slack username to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
@@ -254,16 +256,13 @@ async def process_calendar():
       notify_missing_tutors = True
     checked_hour = next_check_hour
 
-  #try:
   pending = get_pending_tutor_cals(now)
-  #except TimeoutError:
-  #  print('TimeoutError. Skipping for now.')
-  print("got {} pending cal events at {}".format(len(pending), now))
+  logging.info("got {} pending cal events at {}".format(len(pending), now))
   for next_tutor_cal in pending:
     if next_tutor_cal.start.hour == next_check_hour:
       # got an event starting in the next hour
       if notify_missing_tutors:
-        print("got event starting at {}:00, don't need to notify: {}".format(next_check_hour + CHALLENGE_TIME_OFFSET, next_tutor_cal))
+        logging.info("got event starting at {}:00, don't need to notify: {}".format(next_check_hour + CHALLENGE_TIME_OFFSET, next_tutor_cal))
       notify_missing_tutors = False
 
     # don't notify them, not close enoughb
@@ -314,7 +313,7 @@ async def process_calendar():
     cal = data['cal']
     msgid = data['msgid']
     if cal.end < now:
-      print('[{}] expiring calendar entry, past end time', msgid)
+      logging.info('[{}] expiring calendar entry, past end time', msgid)
       del already_announced[calid]
       del msg_id_to_watch[msgid]
       continue
@@ -328,7 +327,7 @@ async def process_calendar():
 
     event_starts = (cal.start - now)
     minutes_away = event_starts.total_seconds() / 60  # negative if we've gone past no
-    print('[{}] {} shift in: {}'.format(msgid, prev_msg['sourcename'], pretty_time_delta(event_starts)))
+    logging.info('[{}] {} shift in: {}'.format(msgid, prev_msg['sourcename'], pretty_time_delta(event_starts)))
     if minutes_away > MINUTES_DANGER:
       continue
 
@@ -340,8 +339,8 @@ async def process_calendar():
 
 async def process_calendar_loop():
   while True:
+    logging.info('Processing calendar entries...')
     await process_calendar()
-    print(".")
     await asyncio.sleep(SLEEP_MINUTES * 60)
 
 
