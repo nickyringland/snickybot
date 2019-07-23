@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-from slackclient import SlackClient
+import slack
+import asyncio
 from icalevents import icalevents
 from datetime import datetime, timezone, timedelta
 import time
@@ -36,7 +37,8 @@ UTCHOURS_ACTIVE_END = (21 - CHALLENGE_TIME_OFFSET) % 24
 MINUTES_NOUSERS = args.test and 40 or 20  # max is 60, won't be checked before current hour
 MINUTES_NOTIFY = args.test and 120 or 10
 MINUTES_DANGER = args.test and 5 or 1
-CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
+#CHANNEL = args.test and "CBXDYDGFP" or "CBVLC2MU3"
+CHANNEL = 'CLN57A7J8'
 
 if args.test:
   print("snickybot in TEST MODE")
@@ -70,12 +72,7 @@ username_file = open(LOOKUP_FILE, 'a')
 reaction_file = open(REACTION_FILE, 'a')
 
 # connect to Slack
-sc = SlackClient(SLACK_TOKEN)
-
-# connect to RTM API which feeds us stuff that happens
-if not sc.rtm_connect(with_team_state=False, auto_reconnect=True):
-  raise Exception("couldn't connect to RTM api")
-sc.rtm_send_message("welcome-test", "test")
+sc = slack.WebClient(SLACK_TOKEN, run_async=True)
 
 
 def is_checked_hour(hour):
@@ -131,10 +128,7 @@ def event_is_same(ev1, ev2):
 def get_members(members, tutors_dict):
   # Woo Thought this was paginated but:
   # At this time, providing no limit value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience HTTP 500 errors. Resolve this scenario by using pagination.
-  if 'members' not in members:
-    print('got no members, maybe rate-limited: {}'.format(members))
-    return
-  for member in members['members']:
+  for member in members:
     slackid = member['id']
     real_name = member['real_name']
     if real_name not in tutors_dict:
@@ -151,7 +145,7 @@ def extract_name_from_cal(next_tutor_cal):
   return(name)
 
 
-def sendmsg(text, threadid=None, attach=None):
+async def sendmsg(text, threadid=None, attach=None):
   if args.silent:
     print('Silent mode, not sending message (threadid={}): {}'.format(threadid, text))
     return {'ts': 'TODO-{}'.format(random.random())}
@@ -164,7 +158,7 @@ def sendmsg(text, threadid=None, attach=None):
     kwargs['thread_ts'] = threadid
   if attach:
     kwargs['attachments'] = attach
-  message = sc.api_call("chat.postMessage", **kwargs)
+  message = await sc.chat_postMessage(**kwargs)
   if threadid:
     print('Replied to thead {}: {}'.format(threadid, text))
   else:
@@ -172,7 +166,7 @@ def sendmsg(text, threadid=None, attach=None):
   return message
 
 
-def message_tutor(slackid, name, impending_tutor_time):
+async def message_tutor(slackid, name, impending_tutor_time):
   time_format = pretty_time_delta(impending_tutor_time)
   if slackid:
     text = ":smile: <@{}>'s ({}) shift starts in {}. Please ack with an emoji reaction.".format(slackid, name, time_format)
@@ -185,14 +179,8 @@ msg_id_to_watch = {}    # messages posted about calendar events (contains {sourc
 already_announced = {}  # calendar events processed and posted about
 
 
-def handle_event(event):
-  if event['type'] == 'reaction_added':
-    return handle_event_reaction_added(event)
-  elif event['type'] == 'message':
-    return handle_event_message(event)
-
-
-def handle_event_reaction_added(event):
+@slack.RTMClient.run_on(event='reaction_added')
+async def handle_event_reaction_added(**event):
   msgid = event['item']['ts']
   userid = event['user']
 
@@ -210,13 +198,14 @@ def handle_event_reaction_added(event):
   calid = prev_msg['calid']
   already_announced[calid]['acked'] = True
 
-  sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
+  await sendmsg("Thanks <@{}>! :+1::star-struck:".format(userid), threadid=msgid)
   print("[{}] slack user {} acked tutoring with: {}".format(msgid, userid, event['reaction']))
   reaction_file.write('{},{}\n'.format(userid, event['reaction']))
   reaction_file.flush()
 
 
-def handle_event_message(event):
+@slack.RTMClient.run_on(event='message')
+async def handle_event_message(**event):
   if 'thread_ts' not in event:
     return  # not a thread reply
 
@@ -237,15 +226,17 @@ def handle_event_message(event):
   username_file.flush()
 
   # if reply contains syntax: <@UBWNYRKDX> map to user
-  sendmsg("Thanks! I've updated {}'s Slack username to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
+  await sendmsg("Thanks! I've updated {}'s Slack username to be <@{}> -- please ack the original message with an emoji reaction. :+1:".format(data['sourcename'], foundid), threadid=threadid)
 
 
 checked_hour = None  # the hour checked up to
 ohno_users_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
 
-while True:
-  members = sc.api_call("users.list")
-  get_members(members, tutors_dict)
+async def process_calendar():
+  global checked_hour
+  response = await sc.users_list()
+  # TODO handle bad response
+  get_members(response['members'], tutors_dict)
   print()
 
   now = datetime.now(timezone.utc)  # calendar data is in UTC
@@ -312,7 +303,7 @@ while True:
         ],
       },
     ]
-    sendmsg("<!here> Warning! There's no tutors rostered on at {}:00! ({})".format(local_hour, ohno_users_text), attach=attach)
+    await sendmsg("<!here> Warning! There're no tutors rostered on at {}:00! ({})".format(local_hour, ohno_users_text), attach=attach)
 
   for calid in list(already_announced.keys()):  # we might modify this during iteration
     data = already_announced[calid]
@@ -339,16 +330,19 @@ while True:
 
     who_text = format_real_name(prev_msg['sourcename'])
     ohno_text = ', '.join(['<@{}>'.format(user) for user in OHNO_USERS])
-    sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who_text, ohno_users_text), threadid=msgid)
+    await sendmsg("Oh no! {} hasn't responded. Pinging {}".format(who_text, ohno_users_text), threadid=msgid)
     del msg_id_to_watch[msgid]
 
-  # sleep for 60s but check if we have events
-  for i in range(0, max(1, SLEEP_MINUTES * 60)):
-    events = sc.rtm_read()
-    for event in events:
-      handle_event(event)
-    time.sleep(1)
-  print(".")
+
+async def process_calendar_loop():
+  while True:
+    await process_calendar()
+    print(".")
+    await asyncio.sleep(SLEEP_MINUTES * 60)
 
 
+async def main():
+  await asyncio.gather(slack.RTMClient(token=SLACK_TOKEN, run_async=True).start(), process_calendar_loop())
 
+
+asyncio.run(main())
